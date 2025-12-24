@@ -374,6 +374,8 @@ int sf_parser_parse(sf_parser_ctx_t *ctx)
     switch (ctx->state) {
         case PARSER_STATE_KEY:
         case PARSER_STATE_VALUE_UNQUOTED:
+        case PARSER_STATE_BEFORE_VALUE:
+        case PARSER_STATE_AFTER_KEY:
             parser_store_value(ctx);
             break;
         case PARSER_STATE_VALUE_SINGLE_QUOTED:
