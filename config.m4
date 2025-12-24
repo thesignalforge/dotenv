@@ -17,7 +17,7 @@ if test "$PHP_SIGNALFORGE_DOTENV" != "no"; then
 
   if test -x "$PKG_CONFIG" && $PKG_CONFIG --exists libsodium; then
     SODIUM_CFLAGS=`$PKG_CONFIG --cflags libsodium`
-    SODIUM_LIBS=`$PKG_CONFIG --libs libsodium`
+    SODIUM_LIBS=`$PKG_CONFIG --static --libs libsodium`
     SODIUM_VERSION=`$PKG_CONFIG --modversion libsodium`
     AC_MSG_RESULT([found version $SODIUM_VERSION via pkg-config])
   else
@@ -35,10 +35,18 @@ if test "$PHP_SIGNALFORGE_DOTENV" != "no"; then
   saved_CFLAGS="$CFLAGS"
   saved_LIBS="$LIBS"
   CFLAGS="$CFLAGS $SODIUM_CFLAGS"
-  LIBS="$LIBS $SODIUM_LIBS"
+  LIBS="$SODIUM_LIBS $LIBS"
 
-  AC_CHECK_LIB([sodium], [sodium_init], [], [
-    AC_MSG_ERROR([libsodium library not usable])
+  AC_MSG_CHECKING([if libsodium is usable])
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([
+    #include <sodium.h>
+  ], [
+    sodium_init();
+  ])], [
+    AC_MSG_RESULT([yes])
+  ], [
+    AC_MSG_RESULT([no])
+    AC_MSG_ERROR([libsodium library not usable. Check that pthread is available.])
   ])
 
   CFLAGS="$saved_CFLAGS"
