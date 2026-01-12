@@ -2,13 +2,20 @@
  * Signalforge Dotenv Extension - Environment Injection
  *
  * Handles injection of parsed values into PHP environment:
- * - getenv() / putenv()
+ * - setenv() / unsetenv() for process environment
  * - $_ENV superglobal
  * - $_SERVER superglobal
+ *
+ * Thread-safety: Uses module globals for the putenv tracker to ensure
+ * ZTS compatibility. The tracker is per-request in module globals.
+ *
+ * Memory safety: Uses setenv() which makes its own copy of strings,
+ * avoiding the POSIX pitfall of putenv() requiring the string to remain
+ * valid for the lifetime of the environment variable.
  */
 
 #include "env.h"
-#include "php.h"
+#include "../php_signalforge_dotenv.h"
 #include "zend_smart_str.h"
 #include "ext/json/php_json.h"
 #include "ext/standard/php_string.h"
@@ -16,47 +23,66 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Track putenv allocations to prevent leaks */
-typedef struct {
-    char **entries;
-    size_t count;
-    size_t capacity;
-} sf_putenv_tracker_t;
-
-static sf_putenv_tracker_t putenv_tracker = {NULL, 0, 0};
-
-/* Register a putenv string for cleanup */
-static void track_putenv_entry(char *entry)
+/*
+ * Track an environment variable key for cleanup.
+ * Uses module globals for thread-safety in ZTS builds.
+ * Keys are stored with persistent allocation since unsetenv needs them.
+ */
+static void track_env_key(const char *key, size_t key_len)
 {
-    if (putenv_tracker.count >= putenv_tracker.capacity) {
-        size_t new_capacity = putenv_tracker.capacity == 0 ? 16 : putenv_tracker.capacity * 2;
-        char **new_entries = erealloc(putenv_tracker.entries, new_capacity * sizeof(char *));
-        if (!new_entries) {
+    sf_putenv_tracker_t *tracker = &SIGNALFORGE_DOTENV_G(putenv_tracker);
+
+    if (tracker->count >= tracker->capacity) {
+        size_t new_capacity = tracker->capacity == 0 ? 16 : tracker->capacity * 2;
+        char **new_keys;
+
+        if (tracker->keys) {
+            new_keys = perealloc(tracker->keys, new_capacity * sizeof(char *), 1);
+        } else {
+            new_keys = pemalloc(new_capacity * sizeof(char *), 1);
+        }
+        if (!new_keys) {
             return;
         }
-        putenv_tracker.entries = new_entries;
-        putenv_tracker.capacity = new_capacity;
+        tracker->keys = new_keys;
+        tracker->capacity = new_capacity;
     }
-    putenv_tracker.entries[putenv_tracker.count++] = entry;
+
+    /* Store a persistent copy of the key for unsetenv() during cleanup */
+    char *key_copy = pemalloc(key_len + 1, 1);
+    if (!key_copy) {
+        return;
+    }
+    memcpy(key_copy, key, key_len);
+    key_copy[key_len] = '\0';
+
+    tracker->keys[tracker->count++] = key_copy;
 }
 
-/* Clean up tracked putenv entries (called on RSHUTDOWN) */
+/*
+ * Clean up tracked environment variables (called on RSHUTDOWN).
+ * Removes all environment variables set during this request using unsetenv().
+ * This is safe because setenv() made its own copies of the values.
+ */
 void sf_env_cleanup_putenv(void)
 {
-    for (size_t i = 0; i < putenv_tracker.count; i++) {
-        if (putenv_tracker.entries[i]) {
-            /* Note: We cannot safely unsetenv here as other code may hold pointers.
-             * The entries will be freed when the process exits.
-             * For FPM/Swoole, we accept this minor leak per-request. */
-            efree(putenv_tracker.entries[i]);
+    sf_putenv_tracker_t *tracker = &SIGNALFORGE_DOTENV_G(putenv_tracker);
+
+    for (size_t i = 0; i < tracker->count; i++) {
+        if (tracker->keys[i]) {
+            /* unsetenv() is safe - it removes the variable from the environment.
+             * Since we used setenv() which made its own copies, there's no
+             * dangling pointer issue. */
+            unsetenv(tracker->keys[i]);
+            pefree(tracker->keys[i], 1);
         }
     }
-    if (putenv_tracker.entries) {
-        efree(putenv_tracker.entries);
+    if (tracker->keys) {
+        pefree(tracker->keys, 1);
     }
-    putenv_tracker.entries = NULL;
-    putenv_tracker.count = 0;
-    putenv_tracker.capacity = 0;
+    tracker->keys = NULL;
+    tracker->count = 0;
+    tracker->capacity = 0;
 }
 
 bool sf_env_validate_key(const char *key, size_t key_len)
@@ -176,31 +202,34 @@ sf_env_error_t sf_env_set(
         }
     }
 
-    /* Inject into process environment via putenv */
+    /* Inject into process environment via setenv */
     if (targets & SF_ENV_TARGET_GETENV) {
-        /* Format: KEY=VALUE\0 */
-        size_t env_len = key_len + 1 + value_len + 1;
-        char *env_str = emalloc(env_len);
-        if (!env_str) {
+        /* Create null-terminated copies for setenv (it makes its own copies) */
+        char *key_str = estrndup(key, key_len);
+        char *value_str = estrndup(value, value_len);
+
+        if (!key_str || !value_str) {
+            if (key_str) efree(key_str);
+            if (value_str) efree(value_str);
             zend_string_release(zkey);
             zend_string_release(zvalue);
             return SF_ENV_ERR_MEMORY;
         }
 
-        memcpy(env_str, key, key_len);
-        env_str[key_len] = '=';
-        memcpy(env_str + key_len + 1, value, value_len);
-        env_str[env_len - 1] = '\0';
-
-        if (putenv(env_str) != 0) {
-            efree(env_str);
+        /* setenv() makes its own copies, so we can free our temporaries after */
+        if (setenv(key_str, value_str, 1) != 0) {
+            efree(key_str);
+            efree(value_str);
             zend_string_release(zkey);
             zend_string_release(zvalue);
             return SF_ENV_ERR_PUTENV;
         }
 
-        /* Track for cleanup */
-        track_putenv_entry(env_str);
+        /* Track key for cleanup via unsetenv() on RSHUTDOWN */
+        track_env_key(key, key_len);
+
+        efree(key_str);
+        efree(value_str);
     }
 
     zend_string_release(zkey);
@@ -257,28 +286,27 @@ sf_env_error_t sf_env_set_zval(
             return SF_ENV_ERR_MEMORY;
         }
 
-        size_t env_len = key_len + 1 + ZSTR_LEN(serialized) + 1;
-        char *env_str = emalloc(env_len);
-        if (!env_str) {
+        /* Create null-terminated key for setenv */
+        char *key_str = estrndup(key, key_len);
+        if (!key_str) {
             zend_string_release(serialized);
             zend_string_release(zkey);
             return SF_ENV_ERR_MEMORY;
         }
 
-        memcpy(env_str, key, key_len);
-        env_str[key_len] = '=';
-        memcpy(env_str + key_len + 1, ZSTR_VAL(serialized), ZSTR_LEN(serialized));
-        env_str[env_len - 1] = '\0';
-
-        zend_string_release(serialized);
-
-        if (putenv(env_str) != 0) {
-            efree(env_str);
+        /* setenv() makes its own copies, so we can free our temporaries after */
+        if (setenv(key_str, ZSTR_VAL(serialized), 1) != 0) {
+            efree(key_str);
+            zend_string_release(serialized);
             zend_string_release(zkey);
             return SF_ENV_ERR_PUTENV;
         }
 
-        track_putenv_entry(env_str);
+        /* Track key for cleanup via unsetenv() on RSHUTDOWN */
+        track_env_key(key, key_len);
+
+        efree(key_str);
+        zend_string_release(serialized);
     }
 
     zend_string_release(zkey);

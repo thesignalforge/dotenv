@@ -34,6 +34,13 @@ extern zend_module_entry signalforge_dotenv_module_entry;
 /* Exception class */
 extern zend_class_entry *signalforge_dotenv_exception_ce;
 
+/* Putenv tracker for cleanup - stores keys set via setenv() */
+typedef struct {
+    char **keys;        /* Array of key strings to unsetenv() */
+    size_t count;       /* Number of keys tracked */
+    size_t capacity;    /* Allocated capacity */
+} sf_putenv_tracker_t;
+
 /* Module globals - minimal, request-scoped where needed */
 ZEND_BEGIN_MODULE_GLOBALS(signalforge_dotenv)
     /* Last error message for detailed diagnostics */
@@ -43,6 +50,9 @@ ZEND_BEGIN_MODULE_GLOBALS(signalforge_dotenv)
     /* Cached parsed values for current request (optional optimization) */
     HashTable *cached_env;
     zend_bool cache_valid;
+
+    /* Track environment variables set during this request (thread-safe) */
+    sf_putenv_tracker_t putenv_tracker;
 ZEND_END_MODULE_GLOBALS(signalforge_dotenv)
 
 ZEND_EXTERN_MODULE_GLOBALS(signalforge_dotenv)

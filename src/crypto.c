@@ -10,16 +10,36 @@
 #include "../php_signalforge_dotenv.h"
 #include <string.h>
 
-/* Static flag to track initialization */
-static volatile int crypto_initialized = 0;
+/*
+ * Static flag to track initialization.
+ *
+ * Thread-safety note: This flag is set only during MINIT, which runs
+ * single-threaded before any request processing begins. The flag is then
+ * read-only during request processing, so no synchronization is needed.
+ *
+ * Additionally, sodium_init() is internally thread-safe and idempotent
+ * (returns 1 if already initialized), providing an extra safety layer.
+ */
+static int crypto_initialized = 0;
 
 sf_crypto_error_t sf_crypto_init(void)
 {
+    /*
+     * This function should only be called from MINIT (single-threaded).
+     * After initialization, crypto_initialized is read-only.
+     */
     if (crypto_initialized) {
         return SF_CRYPTO_OK;
     }
 
-    if (sodium_init() < 0) {
+    /*
+     * sodium_init() is thread-safe and idempotent:
+     * - Returns 0 on success
+     * - Returns 1 if already initialized
+     * - Returns -1 on failure
+     */
+    int result = sodium_init();
+    if (result < 0) {
         return SF_CRYPTO_ERR_INIT;
     }
 

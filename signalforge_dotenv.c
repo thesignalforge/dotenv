@@ -508,6 +508,11 @@ static PHP_GINIT_FUNCTION(signalforge_dotenv)
     signalforge_dotenv_globals->last_error_len = 0;
     signalforge_dotenv_globals->cached_env = NULL;
     signalforge_dotenv_globals->cache_valid = 0;
+
+    /* Initialize putenv tracker */
+    signalforge_dotenv_globals->putenv_tracker.keys = NULL;
+    signalforge_dotenv_globals->putenv_tracker.count = 0;
+    signalforge_dotenv_globals->putenv_tracker.capacity = 0;
 }
 
 /* Module entry */
