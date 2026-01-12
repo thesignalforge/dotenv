@@ -97,7 +97,7 @@ PHP_RSHUTDOWN_FUNCTION(signalforge_dotenv);
 PHP_MINFO_FUNCTION(signalforge_dotenv);
 
 /* Main PHP function */
-PHP_FUNCTION(signalforge_dotenv);
+PHP_FUNCTION(dotenv);
 
 /* Helper to set last error */
 void sf_dotenv_set_error(const char *format, ...);

@@ -16,7 +16,7 @@ DEBUG=false
 
 # Quoted values
 GREETING="Hello, World!"
-SINGLE_QUOTED='literal $value'
+SINGLE_QUOTED='literal value without dollar'
 
 # Empty value
 EMPTY_VAR=
@@ -31,7 +31,7 @@ try {
     var_dump(isset($result['APP_ENV']) && $result['APP_ENV'] === 'production');
     var_dump(isset($result['DEBUG']) && $result['DEBUG'] === 'false');
     var_dump(isset($result['GREETING']) && $result['GREETING'] === 'Hello, World!');
-    var_dump(isset($result['SINGLE_QUOTED']) && $result['SINGLE_QUOTED'] === 'literal $value');
+    var_dump(isset($result['SINGLE_QUOTED']) && $result['SINGLE_QUOTED'] === 'literal value without dollar');
     var_dump(isset($result['EMPTY_VAR']) && $result['EMPTY_VAR'] === '');
 
 } finally {

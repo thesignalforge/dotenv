@@ -9,6 +9,7 @@
 
 #include "env.h"
 #include "php.h"
+#include "zend_smart_str.h"
 #include "ext/json/php_json.h"
 #include "ext/standard/php_string.h"
 #include "SAPI.h"

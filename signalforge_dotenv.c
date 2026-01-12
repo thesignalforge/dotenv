@@ -264,7 +264,7 @@ static void post_process_values(HashTable *values, sf_dotenv_options_t *opts)
 
 /* {{{ proto array Signalforge\dotenv(string $path = ".env", array $options = [])
    Load and parse a .env file */
-PHP_FUNCTION(signalforge_dotenv)
+PHP_FUNCTION(dotenv)
 {
     char *path = ".env";
     size_t path_len = sizeof(".env") - 1;
