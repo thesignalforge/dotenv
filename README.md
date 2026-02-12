@@ -1,5 +1,8 @@
 # Signalforge Dotenv Extension
 
+[![PHP 8.3+](https://img.shields.io/badge/PHP-8.3%2B-blue.svg)](https://php.net)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A high-performance PHP C extension for loading, parsing, and decrypting `.env` files.
 
 ## Quick Start
@@ -23,8 +26,10 @@ echo $_ENV['APP_NAME'];
 // Load from specific path
 $env = \Signalforge\dotenv('/path/to/.env');
 
-// Load from multiple files (later files override earlier)
-$env = \Signalforge\dotenv(['.env', '.env.local']);
+// Note: Multiple file loading requires calling dotenv() multiple times
+// (C extension accepts string path only, not array)
+$env1 = \Signalforge\dotenv('.env');
+$env2 = \Signalforge\dotenv('.env.local'); // Later values override
 ```
 
 ### Variable Expansion with Defaults
