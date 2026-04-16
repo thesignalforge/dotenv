@@ -1,0 +1,5 @@
+export PATH=/usr/local/bin:$PATH
+export EDITOR=vim
+COMPOSED=${DB_USER}@${DB_HOST}:${DB_PORT}
+DEFAULTED=${MISSING:-fallback}
+ALTERNATE=${APP_NAME:+alt}

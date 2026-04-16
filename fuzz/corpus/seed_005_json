@@ -1,0 +1,3 @@
+JSON={"a":1,"b":[2,3]}
+JSON_ARR=[1,2,3,4]
+NEST={"users":[{"id":1,"name":"alice"}]}
