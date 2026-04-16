@@ -122,43 +122,65 @@ static void parse_options(zval *options_zv, sf_dotenv_options_t *opts)
     }
 }
 
-/* Read file contents */
+/* Maximum .env file size: 10 MB */
+#define SF_DOTENV_MAX_FILE_SIZE (10 * 1024 * 1024)
+
+/* Read file contents — uses open+fstat to avoid TOCTOU, enforces open_basedir */
 static unsigned char *read_file(const char *path, size_t *len)
 {
     struct stat st;
     int fd;
     unsigned char *content;
     ssize_t bytes_read;
+    size_t total_read;
 
-    if (stat(path, &st) != 0) {
+    /* Enforce PHP's open_basedir restriction */
+    if (php_check_open_basedir(path)) {
         return NULL;
     }
 
-    if (!S_ISREG(st.st_mode)) {
-        return NULL;
-    }
-
+    /* Open first, then stat the fd — eliminates TOCTOU race */
     fd = open(path, O_RDONLY);
     if (fd < 0) {
         return NULL;
     }
 
-    content = emalloc(st.st_size + 1);
-    if (!content) {
+    if (fstat(fd, &st) != 0) {
         close(fd);
         return NULL;
     }
 
-    bytes_read = read(fd, content, st.st_size);
+    if (!S_ISREG(st.st_mode)) {
+        close(fd);
+        return NULL;
+    }
+
+    if (st.st_size < 0 || (size_t)st.st_size > SF_DOTENV_MAX_FILE_SIZE) {
+        close(fd);
+        return NULL;
+    }
+
+    /* safe_emalloc prevents integer overflow on st.st_size + 1 */
+    content = safe_emalloc(1, (size_t)st.st_size, 1);
+
+    /* Read in a loop to handle short reads */
+    total_read = 0;
+    while (total_read < (size_t)st.st_size) {
+        bytes_read = read(fd, content + total_read, (size_t)st.st_size - total_read);
+        if (bytes_read <= 0) {
+            break;
+        }
+        total_read += (size_t)bytes_read;
+    }
     close(fd);
 
-    if (bytes_read != st.st_size) {
+    if (total_read == 0 && st.st_size > 0) {
         efree(content);
         return NULL;
     }
 
-    content[st.st_size] = '\0';
-    *len = st.st_size;
+    content[total_read] = '\0';
+    *len = total_read;
     return content;
 }
 
@@ -167,7 +189,7 @@ static zend_string *get_encryption_key(sf_dotenv_options_t *opts)
 {
     /* Direct key takes precedence */
     if (opts->key) {
-        return zend_string_copy(opts->key);
+        return zend_string_dup(opts->key, 0);
     }
 
     /* Try environment variable */
@@ -316,17 +338,7 @@ PHP_FUNCTION(dotenv)
 
         /* Allocate plaintext buffer */
         plaintext_len = sf_crypto_plaintext_max_len(content_len);
-        plaintext = emalloc(plaintext_len + 1);
-        if (!plaintext) {
-            zend_string_release(key);
-            efree(content);
-            zend_throw_exception_ex(
-                signalforge_dotenv_exception_ce,
-                SF_DOTENV_ERR_MEMORY,
-                "Memory allocation failed"
-            );
-            RETURN_THROWS();
-        }
+        plaintext = safe_emalloc(1, plaintext_len, 1);
 
         /* Decrypt */
         sf_crypto_error_t crypto_err = sf_crypto_decrypt(

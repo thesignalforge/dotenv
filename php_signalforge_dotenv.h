@@ -22,6 +22,7 @@
 #include "zend_exceptions.h"
 #include "zend_smart_str.h"
 
+#include <stdbool.h>
 #include <sodium.h>
 
 #define PHP_SIGNALFORGE_DOTENV_VERSION "1.0.0"
@@ -49,7 +50,7 @@ ZEND_BEGIN_MODULE_GLOBALS(signalforge_dotenv)
 
     /* Cached parsed values for current request (optional optimization) */
     HashTable *cached_env;
-    zend_bool cache_valid;
+    bool cache_valid;
 
     /* Track environment variables set during this request (thread-safe) */
     sf_putenv_tracker_t putenv_tracker;
@@ -75,15 +76,15 @@ typedef enum {
 
 /* Options structure parsed from PHP array */
 typedef struct {
-    zend_bool encrypted;        /* Whether to attempt decryption */
-    zend_bool auto_detect;      /* Auto-detect encryption */
+    bool encrypted;             /* Whether to attempt decryption */
+    bool auto_detect;           /* Auto-detect encryption */
     zend_string *key;           /* Encryption key/passphrase */
     zend_string *key_env;       /* Env var name holding the key */
-    zend_bool override;         /* Override existing env vars */
-    zend_bool export_env;       /* Export to process environment */
-    zend_bool export_server;    /* Export to $_SERVER */
+    bool override;              /* Override existing env vars */
+    bool export_env;            /* Export to process environment */
+    bool export_server;         /* Export to $_SERVER */
     zend_string *format;        /* Value format: auto, plain, json */
-    zend_bool parse_arrays;     /* Parse JSON arrays/objects */
+    bool parse_arrays;          /* Parse JSON arrays/objects */
 } sf_dotenv_options_t;
 
 /* Encryption header for versioned format */
@@ -91,6 +92,7 @@ typedef struct {
 #define SF_DOTENV_MAGIC_LEN 8
 #define SF_DOTENV_VERSION_1 0x01
 
+#pragma pack(push, 1)
 typedef struct {
     char magic[SF_DOTENV_MAGIC_LEN];
     uint8_t version;
@@ -98,6 +100,10 @@ typedef struct {
     uint8_t salt[crypto_pwhash_SALTBYTES];
     uint8_t nonce[crypto_secretbox_NONCEBYTES];
 } sf_dotenv_header_t;
+#pragma pack(pop)
+
+_Static_assert(sizeof(sf_dotenv_header_t) == SF_DOTENV_MAGIC_LEN + 1 + 3 + crypto_pwhash_SALTBYTES + crypto_secretbox_NONCEBYTES,
+    "sf_dotenv_header_t must be packed without padding");
 
 /* Function declarations */
 PHP_MINIT_FUNCTION(signalforge_dotenv);

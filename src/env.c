@@ -121,7 +121,10 @@ zend_string *sf_env_serialize_value(zval *value)
         case IS_DOUBLE: {
             char buf[64];
             int len = snprintf(buf, sizeof(buf), "%.*G", (int)EG(precision), Z_DVAL_P(value));
-            return zend_string_init(buf, len, 0);
+            if (len < 0 || (size_t)len >= sizeof(buf)) {
+                len = sizeof(buf) - 1;
+            }
+            return zend_string_init(buf, (size_t)len, 0);
         }
 
         case IS_TRUE:
@@ -207,14 +210,6 @@ sf_env_error_t sf_env_set(
         /* Create null-terminated copies for setenv (it makes its own copies) */
         char *key_str = estrndup(key, key_len);
         char *value_str = estrndup(value, value_len);
-
-        if (!key_str || !value_str) {
-            if (key_str) efree(key_str);
-            if (value_str) efree(value_str);
-            zend_string_release(zkey);
-            zend_string_release(zvalue);
-            return SF_ENV_ERR_MEMORY;
-        }
 
         /* setenv() makes its own copies, so we can free our temporaries after */
         if (setenv(key_str, value_str, 1) != 0) {
