@@ -1,0 +1,5 @@
+ESC1="line1\nline2"
+ESC2="tab\the"
+ESC3="quote \"inside\""
+ESC4="d \$ sign"
+ESC5="back\\slash"

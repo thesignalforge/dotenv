@@ -1,0 +1,8 @@
+ESC1="line1e \"inside\""
+ESC4="dk"
+ESC5="b2"
+ESC2="tab\there"
+ESC5="back\\sla"
+ESC3="quote \"inide\""
+ESC4="dk"
+ESC5="b\\slash"

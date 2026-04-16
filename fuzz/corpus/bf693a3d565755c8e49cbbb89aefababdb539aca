@@ -1,0 +1,6 @@
+SINGLE='no $expand here'
+DOUBLE="yes $expand"
+BACKTICK=`literal`
+EMPTY=
+ONLY_KEY
+SPACES_ARUND =  value  # trailing

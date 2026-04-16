@@ -1,0 +1,6 @@
+SINGLE='o $expnd here'
+DOUBLE="yÿs $expand"
+BACKTICK=`literal`
+EY=
+ONLY_KEY
+SPACES_ARUND =  value  # trailinng
