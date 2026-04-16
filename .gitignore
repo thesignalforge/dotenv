@@ -58,6 +58,11 @@ tmp-php.ini
 # macOS
 .DS_Store
 
+# Vendored / local dev
+libsodium-stable/
+local/
+php_test_results_*.txt
+
 # Environment files (for testing)
 *.env
 !tests/*.env
