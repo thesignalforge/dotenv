@@ -27,7 +27,6 @@ typedef enum {
     PARSER_STATE_VALUE_SINGLE_QUOTED,
     PARSER_STATE_VALUE_DOUBLE_QUOTED,
     PARSER_STATE_VALUE_BACKTICK,
-    PARSER_STATE_ESCAPE,
     PARSER_STATE_COMMENT,
     PARSER_STATE_LINE_END
 } sf_parser_state_t;
@@ -46,7 +45,6 @@ typedef struct {
 
     /* State machine */
     sf_parser_state_t state;
-    sf_parser_state_t saved_state;  /* For escape sequences */
     char quote_char;
 
     /* Options */

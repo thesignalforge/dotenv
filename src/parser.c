@@ -168,9 +168,27 @@ int sf_parser_parse(sf_parser_ctx_t *ctx)
                 } else if (is_newline(c)) {
                     parser_advance(ctx);
                 } else if (is_key_start_char(c)) {
-                    ctx->state = PARSER_STATE_KEY;
-                    smart_str_appendc(&ctx->current_key, c);
-                    parser_advance(ctx);
+                    /* Check for 'export ' prefix and skip it */
+                    if (ctx->pos + 7 <= ctx->input_len &&
+                        memcmp(ctx->input + ctx->pos, "export ", 7) == 0) {
+                        /* Skip 'export ' (6 chars + space) */
+                        for (int skip = 0; skip < 7; skip++) {
+                            parser_advance(ctx);
+                        }
+                        /* Skip any additional whitespace after export */
+                        while (ctx->pos < ctx->input_len && is_whitespace(parser_peek(ctx))) {
+                            parser_advance(ctx);
+                        }
+                        /* Now parse the actual key */
+                        if (ctx->pos < ctx->input_len && is_key_start_char(parser_peek(ctx))) {
+                            ctx->state = PARSER_STATE_KEY;
+                            smart_str_appendc(&ctx->current_key, parser_consume(ctx));
+                        }
+                    } else {
+                        ctx->state = PARSER_STATE_KEY;
+                        smart_str_appendc(&ctx->current_key, c);
+                        parser_advance(ctx);
+                    }
                 } else {
                     parser_set_error(ctx, "Invalid character at start of line");
                     return -1;
@@ -247,6 +265,7 @@ int sf_parser_parse(sf_parser_ctx_t *ctx)
                             end--;
                             ZSTR_LEN(ctx->current_value.s)--;
                         }
+                        ZSTR_VAL(ctx->current_value.s)[ZSTR_LEN(ctx->current_value.s)] = '\0';
                     }
                     parser_store_value(ctx);
                     ctx->state = PARSER_STATE_LINE_START;
@@ -261,6 +280,7 @@ int sf_parser_parse(sf_parser_ctx_t *ctx)
                                 end--;
                                 ZSTR_LEN(ctx->current_value.s)--;
                             }
+                            ZSTR_VAL(ctx->current_value.s)[ZSTR_LEN(ctx->current_value.s)] = '\0';
                             parser_store_value(ctx);
                             ctx->state = PARSER_STATE_COMMENT;
                             parser_advance(ctx);
@@ -432,13 +452,34 @@ void sf_parser_result_free(sf_parser_result_t *result)
     }
 }
 
-/* Variable expansion implementation */
-int sf_expand_variables(
+/* Maximum recursion depth for variable expansion.
+ * 16 is far beyond any reasonable real-world chain (A -> B -> C -> ...) but
+ * catches circular references (A -> B -> A) fast. */
+#define SF_DOTENV_MAX_EXPAND_DEPTH 16
+
+/* Internal expansion entry point with depth tracking and cycle detection.
+ * `visited` is a HashTable used as a set of variable names currently on the
+ * resolution stack for this expansion tree. Seeing a name twice means a
+ * direct or indirect cycle (A -> B -> A), which we reject immediately.
+ *
+ * Returns 0 on success, -1 on any error (depth exceeded, cycle detected).
+ * On error, *err_name receives the offending variable name so the caller
+ * can surface it to the user. Ownership: *err_name is a new zend_string the
+ * caller must release. */
+static int sf_expand_variables_impl(
     const char *input,
     size_t input_len,
     HashTable *env,
-    smart_str *output)
+    smart_str *output,
+    unsigned int depth,
+    HashTable *visited,
+    zend_string **err_name)
 {
+    if (depth > SF_DOTENV_MAX_EXPAND_DEPTH) {
+        /* Defence for ill-formed chains slipping past the cycle check. */
+        return -1;
+    }
+
     size_t i = 0;
 
     while (i < input_len) {
@@ -496,16 +537,80 @@ int sf_expand_variables(
                 if (use_alternate) {
                     /* ${VAR:+alternate} - use alternate if VAR is set and non-empty */
                     if (val && Z_TYPE_P(val) == IS_STRING && Z_STRLEN_P(val) > 0) {
-                        smart_str_appendl(output, default_value, default_len);
+                        /* Alternate may itself contain ${...} — recurse. */
+                        if (zend_hash_exists(visited, key)) {
+                            *err_name = zend_string_copy(key);
+                            zend_string_release(key);
+                            return -1;
+                        }
+                        zval marker;
+                        ZVAL_NULL(&marker);
+                        zend_hash_add(visited, key, &marker);
+
+                        int rc = sf_expand_variables_impl(
+                            default_value, default_len, env, output,
+                            depth + 1, visited, err_name);
+
+                        zend_hash_del(visited, key);
+                        if (rc != 0) {
+                            zend_string_release(key);
+                            return rc;
+                        }
                     }
                 } else if (val && Z_TYPE_P(val) == IS_STRING) {
                     if (use_default_if_empty && Z_STRLEN_P(val) == 0 && default_value) {
-                        smart_str_appendl(output, default_value, default_len);
+                        /* Empty value, use default — default may contain ${...} too. */
+                        if (zend_hash_exists(visited, key)) {
+                            *err_name = zend_string_copy(key);
+                            zend_string_release(key);
+                            return -1;
+                        }
+                        zval marker;
+                        ZVAL_NULL(&marker);
+                        zend_hash_add(visited, key, &marker);
+
+                        int rc = sf_expand_variables_impl(
+                            default_value, default_len, env, output,
+                            depth + 1, visited, err_name);
+
+                        zend_hash_del(visited, key);
+                        if (rc != 0) {
+                            zend_string_release(key);
+                            return rc;
+                        }
                     } else {
-                        smart_str_append(output, Z_STR_P(val));
+                        /* Recursively expand the fetched value so chains like
+                         * A=${B} B=hello resolve to "hello". Cycle detection
+                         * keys on the CURRENT lookup, not the content — that's
+                         * what catches A=${B}, B=${A}. */
+                        if (zend_hash_exists(visited, key)) {
+                            *err_name = zend_string_copy(key);
+                            zend_string_release(key);
+                            return -1;
+                        }
+                        zval marker;
+                        ZVAL_NULL(&marker);
+                        zend_hash_add(visited, key, &marker);
+
+                        int rc = sf_expand_variables_impl(
+                            Z_STRVAL_P(val), Z_STRLEN_P(val), env, output,
+                            depth + 1, visited, err_name);
+
+                        zend_hash_del(visited, key);
+                        if (rc != 0) {
+                            zend_string_release(key);
+                            return rc;
+                        }
                     }
                 } else if (default_value) {
-                    smart_str_appendl(output, default_value, default_len);
+                    /* Default for missing var — also expandable. */
+                    int rc = sf_expand_variables_impl(
+                        default_value, default_len, env, output,
+                        depth + 1, visited, err_name);
+                    if (rc != 0) {
+                        zend_string_release(key);
+                        return rc;
+                    }
                 }
                 /* If no value and no default, expand to empty string */
 
@@ -531,7 +636,24 @@ int sf_expand_variables(
                 zval *val = zend_hash_find(env, key);
 
                 if (val && Z_TYPE_P(val) == IS_STRING) {
-                    smart_str_append(output, Z_STR_P(val));
+                    if (zend_hash_exists(visited, key)) {
+                        *err_name = zend_string_copy(key);
+                        zend_string_release(key);
+                        return -1;
+                    }
+                    zval marker;
+                    ZVAL_NULL(&marker);
+                    zend_hash_add(visited, key, &marker);
+
+                    int rc = sf_expand_variables_impl(
+                        Z_STRVAL_P(val), Z_STRLEN_P(val), env, output,
+                        depth + 1, visited, err_name);
+
+                    zend_hash_del(visited, key);
+                    if (rc != 0) {
+                        zend_string_release(key);
+                        return rc;
+                    }
                 }
 
                 zend_string_release(key);
@@ -544,6 +666,39 @@ int sf_expand_variables(
     }
 
     smart_str_0(output);
+    return 0;
+}
+
+/* Public entry point — preserves existing ABI. */
+int sf_expand_variables(
+    const char *input,
+    size_t input_len,
+    HashTable *env,
+    smart_str *output)
+{
+    HashTable visited;
+    zend_hash_init(&visited, 8, NULL, NULL, 0);
+
+    zend_string *err_name = NULL;
+    int rc = sf_expand_variables_impl(input, input_len, env, output, 0, &visited, &err_name);
+
+    zend_hash_destroy(&visited);
+
+    if (rc != 0) {
+        /* Leave any partial output intact; emit a warning so the caller
+         * surfaces the problem. In practice .env parsing aborts cleanly via
+         * the parser-level error path, but we also want visibility when
+         * this function is invoked directly. */
+        const char *name = err_name ? ZSTR_VAL(err_name) : "(unknown)";
+        php_error_docref(NULL, E_WARNING,
+            "Signalforge\\Dotenv: Variable expansion depth exceeded; "
+            "likely circular reference involving '%s'", name);
+        if (err_name) {
+            zend_string_release(err_name);
+        }
+        return -1;
+    }
+
     return 0;
 }
 
